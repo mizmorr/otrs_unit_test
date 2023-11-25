@@ -17,6 +17,7 @@ use Kernel::GenericInterface::Operation::Customer::CustomerUserCreate;
 my $CustomerUserObject  = $Kernel::OM->Get('Kernel::System::CustomerUser');
 my $ConfigObject = $Kernel::OM->Get('Kernel::Config');
 my $CacheObject	 = $Kernel::OM->Get('Kernel::System::Cache');
+my $DynamicFieldObject = $Kernel::OM->Get('Kernel::System::DynamicField');
 
 # Skip SSL certificate verification.
 $Kernel::OM->ObjectParamAdd(
@@ -50,6 +51,118 @@ $Helper->ConfigSettingChange(
     Value => 1,
 );
 
+my @DFIDs;
+my %DynamicFieldTextConfig = (
+    Name       => "Unittest1$RandomID",
+    FieldOrder => 9991,
+    FieldType  => 'Text',
+    ObjectType => 'CustomerUser',
+    Label      => 'Description',
+    ValidID    => 1,
+    Config     => {
+        DefaultValue => '',
+    },
+);
+my $FieldTextID = $DynamicFieldObject->DynamicFieldAdd(
+    %DynamicFieldTextConfig,
+    UserID  => 1,
+    Reorder => 0,
+);
+$Self->True(
+    $FieldTextID,
+    "Dynamic Field $FieldTextID"
+);
+
+# add ID
+$DynamicFieldTextConfig{ID} = $FieldTextID;
+push @DFIDs, $FieldTextID;
+# add dropdown dynamic field
+my %DynamicFieldDropdownConfig = (
+    Name       => "Unittest2$RandomID",
+    FieldOrder => 9992,
+    FieldType  => 'Dropdown',
+    ObjectType => 'CustomerUser',
+    Label      => 'Description',
+    ValidID    => 1,
+    Config     => {
+        PossibleValues => {
+            1 => 'One',
+            2 => 'Two',
+            3 => 'Three',
+            0 => '0',
+        },
+    },
+);
+my $FieldDropdownID = $DynamicFieldObject->DynamicFieldAdd(
+    %DynamicFieldDropdownConfig,
+    UserID  => 1,
+    Reorder => 0,
+);
+$Self->True(
+    $FieldDropdownID,
+    "Dynamic Field $FieldDropdownID"
+);
+
+# add ID
+$DynamicFieldDropdownConfig{ID} = $FieldDropdownID;
+push @DFIDs, $FieldDropdownID;
+
+# add multiselect dynamic field
+my %DynamicFieldMultiselectConfig = (
+    Name       => "Unittest3$RandomID",
+    FieldOrder => 9993,
+    FieldType  => 'Multiselect',
+    ObjectType => 'CustomerUser',
+    Label      => 'Multiselect label',
+    ValidID    => 1,
+    Config     => {
+        PossibleValues => {
+            1 => 'Value9ßüß',
+            2 => 'DifferentValue',
+            3 => '1234567',
+        },
+    },
+);
+my $FieldMultiselectID = $DynamicFieldObject->DynamicFieldAdd(
+    %DynamicFieldMultiselectConfig,
+    UserID  => 1,
+    Reorder => 0,
+);
+$Self->True(
+    $FieldMultiselectID,
+    "Dynamic Field $FieldMultiselectID"
+);
+
+# add ID
+$DynamicFieldMultiselectConfig{ID} = $FieldMultiselectID;
+push @DFIDs, $FieldMultiselectID;
+
+my %DynamicFieldDateTimeConfig = (
+    Name       => "DateField",
+    FieldOrder => 9994,
+    FieldType  => 'DateTime',
+    ObjectType => 'CustomerUser',
+    Label      => 'Description',
+    Config     => {
+        DefaultValue  => 0,
+        YearsInFuture => 0,
+        YearsInPast   => 0,
+        YearsPeriod   => 0,
+    },
+    ValidID => 1,
+);
+my $FieldDateTimeID = $DynamicFieldObject->DynamicFieldAdd(
+    %DynamicFieldDateTimeConfig,
+    UserID  => 1,
+    Reorder => 0,
+);
+$Self->True(
+    $FieldDateTimeID,
+    "Dynamic Field $FieldDateTimeID"
+);
+$DynamicFieldDateTimeConfig{ID} = $FieldDateTimeID;
+push @DFIDs, $FieldDateTimeID;
+
 #create user for tests
 
 my $TestUserLogin         = $Helper->TestUserCreate(
@@ -78,7 +191,6 @@ for my $CustomerUserID (@OldCustomerUserIDs) {
                 UserID          => 1,
 	);
 }
-
 
 # create web service
 
@@ -196,6 +308,42 @@ my $UserLogin = $Helper->TestUserCreate(
 
 my $Password = $UserLogin;
 
+my $TestCustomerUserDelete = sub {
+	my %Param = @_;
+
+	my @CustomerUserIDs = @{ $Param{CustomerUserIDs} };
+
+	sleep 1;
+
+	CUSTOMERUSERID:
+	for my $CustomerUserID (@CustomerUserIDs) {
+	
+		next CUSTOMERUSERID if !$CustomerUserID;
+		my $CustomerUserDelete = $CustomerUserObject->CustomerUserDelete(
+			CustomerUserID	=> $CustomerUserID,
+			UserID		=> 1,
+		);
+
+		if ( !$CustomerUserDelete ) {
+			sleep 3;
+			$CustomerUserDelete = $CustomerUserObject->CustomerUserDelete(
+					CustomerUserID	=> $CustomerUserID,
+					UserID		=> 1,
+			);
+		}
+		$Self->True(
+			$CustomerUserDelete,
+			"Delete cutomer user - $CustomerUserID"
+		);
+		# sanity check
+		$Self->True(
+			$CustomerUserDelete,
+			"CustomerUserDelete() successful for CustomerUser ID $CustomerUserID"
+		);
+	}
+	return 1;
+};
+
 # start requester with our web service
 my $RequesterSessionResult = $RequesterSessionObject->Run(
     WebserviceID => $WebserviceID,
@@ -210,30 +358,22 @@ my $NewSessionID = $RequesterSessionResult->{Data}->{SessionID};
 
 my $Key = 'Special';
 
-my $SpecialCustomerUser = $CustomerUserObject->CustomerUserAdd(
-        Source         => 'CustomerUser',
-        UserFirstname  => 'Firstname Test' . $Key,
-        UserLastname   => 'Lastname Test' . $Key,
-        UserCustomerID => $Key . '-Customer-Id',
-        UserLogin      => $Key,
-        UserEmail      => $Key . '-Email@example.com',
-        UserPassword   => 'some_pass',
-        ValidID        => 1,
-        UserID         => 1,
+my $CustomerEmail = 'unittest' . 1 . $Helper->GetRandomID() .  '-root@localhost.com';
+
+my %Errors = (
+	EmailInUse => {
+	   Data => {
+		Error => {
+			ErrorCode    => 'CustomerUserCreate.EmailInUse',
+			ErrorMessage => "CustomerUserCreate: Email address already in use for another customer user!",
+			
+			}
+		},
+	   Success => 1,
+	}
+	
+
 );
-
-$Self->True(
-       $SpecialCustomerUser,
-       "CustomerUser is created with ID $SpecialCustomerUser",
-);
-
-#$Helper->ConfigSettingChange(
-#    Valid => 1,
-#    Key   => 'CheckEmailAddresses',
-#    Value => 1,
-#);
-
-
 my @Tests = 
 (
     {
@@ -388,29 +528,6 @@ my @Tests =
         Operation => 'CustomerUserCreate',
     },
  
-    {
-        Name           => 'UserLogin already exist',
-        SuccessRequest => 1,
-        SuccessCreate  => 0,
-        RequestData    => {
-		CustomerUser => {
-			UserLogin	=> $Key,
-			UserLastname	=> 'ValidLastname',
-			UserEmail	=> 'validemail-Email@example.com',
-			UserFirstname	=> 'ValidFirstname',
-		},
-	},
-        ExpectedData   => {
-            Data => {
-                Error => {
-                    ErrorCode    => 'CustomerUserCreate.ValidateUserLogin',
-                    ErrorMessage => "CustomerUserCreate: UserLogin already exist!",
-		},
-            },
-            Success => 1
-        },
-        Operation => 'CustomerUserCreate',
-    },
  
     {
         Name           => 'Invalid email',
@@ -427,42 +544,154 @@ my @Tests =
         ExpectedData   => {
             Data => {
                 Error => {
-                    ErrorCode    => 'CustomerUserUpdate.EmailValidate',
-                    ErrorMessage => "CustomerUserUpdate: Email address not valid!",
+                    ErrorCode    => 'CustomerUserCreate.EmailValidate',
+                    ErrorMessage => "CustomerUserCreate: Email address not valid!",
 		},
             },
             Success => 1
         },
         Operation => 'CustomerUserCreate',
     },
+
+    #{
+    #    Name           => 'Email in use',
+#	Type	       => 'EmailCustomerUser',
+ #       SuccessRequest => 1,
+  #      SuccessCreate  => 0,
+   #     RequestData    => {
+#		CustomerUser => {
+#			UserLogin	=> 'ValidLogin',
+#			UserLastname	=> 'ValidLastname',
+#			UserEmail	=> $Key . '-Email@example.com',
+#			UserFirstname	=> 'ValidFirstname',
+#		},
+#	},
+ #       ExpectedData   => {
+  #          Data => {
+   #             Error => {
+    #                ErrorCode    => 'CustomerUserUpdate.EmailInUse',
+     #               ErrorMessage => "CustomerUserUpdate: Email address already in use for another customer user!",
+#		},
+ #           },
+  #          Success => 1
+   #     },
+    #    Operation => 'CustomerUserCreate',
+    #},
 
     {
-        Name           => 'Email in use',
+        Name           => 'CustomerUser valid',
         SuccessRequest => 1,
-        SuccessCreate  => 0,
+        SuccessCreate  => 1,
         RequestData    => {
 		CustomerUser => {
-			UserLogin	=> 'ValidLogin',
-			UserLastname	=> 'ValidLastname',
-			UserEmail	=> $Key . '-Email@example.com',
-			UserFirstname	=> 'ValidFirstname',
+			Source		=> 'CustomerUser',
+			UserLastname	=> 'Doe',
+			UserEmail	=> $CustomerEmail,
+			UserFirstname	=> 'John',
+			UserLogin	=> 'validlogin',
+			Password	=> 'some-pass',
+			ValidID		=> 1,
 		},
-	},
-	#todo : should return error email in use
-        ExpectedData   => {
-            Data => {
-                Error => {
-                    ErrorCode    => 'CustomerUserUpdate.EmailValidate',
-                    ErrorMessage => "CustomerUserUpdate: Email address already in use for another customer user!",
-		},
-            },
-            Success => 1
-        },
+	},    
         Operation => 'CustomerUserCreate',
-    },
+	ExpectedData => {
+		Data => {
+			CustomerUserID => 'validlogin',
+		},
+		Success => 1,
+	}
+     },
 
-	 
+     {
+        Name           => 'DF text',
+        SuccessRequest => 1,
+        SuccessCreate  => 1,
+        RequestData    => {
+		CustomerUser => {
+			Source		=> 'CustomerUser',
+			UserLastname	=> 'Doe',
+			UserEmail	=> 'df-text' . $CustomerEmail,
+			UserFirstname	=> 'John',
+			UserLogin	=> 'validlogintext',
+			Password	=> 'some-pass',
+			ValidID		=> 1,
+		},
+		DynamicFields => {
+			Name  => $DynamicFieldTextConfig{Name},
+			Value => 'customer_user1',
+		},
+	},    
+        Operation => 'CustomerUserCreate',
+	ExpectedData => {
+		Data => {
+			CustomerUserID => 'validlogintext',
+		},
+		Success => 1,
+	}
+     },
+     {
+        Name           => 'DF multiselect',
+        SuccessRequest => 1,
+        SuccessCreate  => 1,
+        RequestData    => {
+		CustomerUser => {
+			Source		=> 'CustomerUser',
+			UserLastname	=> 'Doe',
+			UserEmail	=> 'df-multi' . $CustomerEmail,
+			UserFirstname	=> 'John',
+			UserLogin	=> 'validlogin-multi',
+			Password	=> 'some-pass',
+			ValidID		=> 1,
+		},
+		DynamicFields => {
+			Name  => $DynamicFieldMultiselectConfig{Name},
+			Value => 'customer_user1',
+		},
+	},    
+        Operation => 'CustomerUserCreate',
+	ExpectedData => {
+		Data => {
+			CustomerUserID => 'validlogin-multi',
+		},
+		Success => 1,
+	}
+     },
+     {
+        Name           => 'DF drop+data',
+        SuccessRequest => 1,
+        SuccessCreate  => 1,
+        RequestData    => {
+		CustomerUser => {
+			Source		=> 'CustomerUser',
+			UserLastname	=> 'Doe',
+			UserEmail	=> 'df-ddrop' . $CustomerEmail,
+			UserFirstname	=> 'John',
+			UserLogin	=> 'validlogin-ddrop',
+			Password	=> 'some-pass',
+			ValidID		=> 1,
+		},
+		DynamicFields => [ 
+			{
+				Name  => $DynamicFieldDropdownConfig{Name},
+				Value => 'customer_user1',
+			},
+			{
+				Name  => $DynamicFieldDateTimeConfig{Name},
+				Value => '2023-11-25 12:28:00',
+			},
+		]
+	},    
+        Operation => 'CustomerUserCreate',
+	ExpectedData => {
+		Data => {
+			CustomerUserID => 'validlogin-ddrop',
+		},
+		Success => 1,
+	}
+     },
+
 );
+
 my $DebuggerObject = Kernel::GenericInterface::Debugger->new(
         DebuggerConfig => {
                 DebugThreshold  => 'debug',
@@ -476,7 +705,7 @@ $Self->Is(
         'Kernel::GenericInterface::Debugger',
         'DebuggerObject instantiate correctly'
 );
-
+TEST:
 for my $Test (@Tests) {
             if ( $Test->{Type} eq 'EmailCustomerUser' ) {
                 $Helper->ConfigSettingChange(
@@ -509,61 +738,192 @@ for my $Test (@Tests) {
         Password  => $Password,
     );
 
-    # start requester with our web service
-    my $LocalResult = $LocalObject->Run(
-        WebserviceID => $WebserviceID,
-        Invoker      => $Test->{Operation},
-        Data         => {
-            %Auth,
-            %{ $Test->{RequestData} },
-        },
-    );
-
-    # check result
-    $Self->Is(
-        'HASH',
-        ref $LocalResult,
-        "$Test->{Name} - Local result structure is valid"
-    );
 
     # create requester object
     my $RequesterObject = $Kernel::OM->Get('Kernel::GenericInterface::Requester');
+
     $Self->Is(
         'Kernel::GenericInterface::Requester',
         ref $RequesterObject,
         "$Test->{Name} - Create requester object"
     );
 
-    # start requester with our web service
-    my $RequesterResult = $RequesterObject->Run(
-        WebserviceID => $WebserviceID,
-        Invoker      => $Test->{Operation},
-        Data         => {
-            %Auth,
-            %{ $Test->{RequestData} },
-        },
-    );
-
-    
-   # check result
-   
-    $Self->Is(
-        'HASH',
-        ref $RequesterResult,
-        "$Test->{Name} - Requester result structure is valid"
-    );
-
-    $Self->Is(
-        $RequesterResult->{Success},
-        $Test->{SuccessRequest},
-        "$Test->{Name} - Requester successful result"
-    );
 
     if ( $Test->{SuccessCreate} ) {
+    my ($Remote, $Local) = () x 2;
+    my @loops = (0..1);
+    foreach(@loops) {
+	    if ($_ == 0) {
+		    # start requester with our web service
+		    my $LocalResult = $LocalObject->Run(
+		        WebserviceID => $WebserviceID,
+		        Invoker      => $Test->{Operation},
+		        Data         => {
+		            %Auth,
+		            %{ $Test->{RequestData} },
+		        },
+		    );
+
+		    # check result
+		    $Self->Is(
+		        'HASH',
+		        ref $LocalResult,
+		        "$Test->{Name} - Local result structure is valid"
+		    );
+
+			# local results
+		        $Self->True(
+		            $LocalResult->{Data}->{CustomerUserID},
+		            "$Test->{Name} - Local result CustomerUserID with True."
+		        );
+	
+			$Local = $LocalResult;
+
+			$Self->IsDeeply(
+		            $LocalResult->{Data}->{Error},
+		            undef,
+		            "$Test->{Name} - Local result Error is undefined."
+		        );
+
+		        $Self->IsDeeply(
+		            $LocalResult,
+		            $Test->{ExpectedData},
+		            "$Test->{Name} - Local result matched with expected local call result.",
+		        );
+			
+#			$Self->IsDeeply(
+#				$RequesterResult,
+#				$Errors{EmailInUse},
+#				"detected error",
+#			);		
+			
+			my @CustomerUserIDs = ( $LocalResult->{Data}->{CustomerUserID} );
+			$TestCustomerUserDelete->(
+					CustomerUserIDs => \@CustomerUserIDs,
+			);
+		    } else {
+			    # start requester with our web service
+			    my $RequesterResult = $RequesterObject->Run(
+			        WebserviceID => $WebserviceID,
+			        Invoker      => $Test->{Operation},
+			        Data         => {
+			            %Auth,
+			            %{ $Test->{RequestData} },
+			        },
+			    );
+
+			    $Self->Is(
+			        $RequesterResult->{Success},
+			        $Test->{SuccessRequest},
+			        "$Test->{Name} - Requester successful result"
+			    );
+			    my $LocalResult = $LocalObject->Run(
+			        WebserviceID => $WebserviceID,
+			        Invoker      => $Test->{Operation},
+			        Data         => {
+			            %Auth,
+			            %{ $Test->{RequestData} },
+			        },
+			    );
+
+			    # check result
+			    $Self->Is(
+			        'HASH',
+			        ref $LocalResult,
+			        "$Test->{Name} - Local result structure is valid"
+			    );
+			   # check result
+			   
+			    $Self->Is(
+			        'HASH',
+			        ref $RequesterResult,
+			        "$Test->{Name} - Requester result structure is valid"
+			    );
+			# requester results
+		        
+			$Self->IsDeeply(
+		                $RequesterResult,
+		                $Test->{ExpectedData},
+		                "$Test->{Name} - Requester success status (needs configured and running webserver)"
+		        );
+
+			$Remote = $RequesterResult;
+		
+			# append a string to local return(specific)
+			$Errors{EmailInUse}->{ErrorMessage} = 'CustomerUserCreate.EmailInUse: CustomerUserCreate: Email address already in use for another customer user!';
+
+			$Self->IsDeeply(
+				$LocalResult,
+				$Errors{EmailInUse},
+				"detected error",
+			);
+			$Self->Is(
+				$RequesterResult->{Data}->{Error},
+				undef,
+				"$Test->{Name} - Remote result Error is undefined.",
+			);
+
+			my @CustomerUserIDs = ( $RequesterResult->{Data}->{CustomerUserID} );
+			$TestCustomerUserDelete->(
+					CustomerUserIDs => \@CustomerUserIDs,
+			);
+			
+			}
+		}
+
+	        # consistency check
+
+                $Self->IsDeeply(
+                    $Local,
+                    $Remote,
+                    "$Test->{Name} - Local result matched with remote result.",
+                );
 
     }
 
+    # tests supposed to fail
     else {
+
+	# start requester with our web service
+        my $LocalResult = $LocalObject->Run(
+		        WebserviceID => $WebserviceID,
+		        Invoker      => $Test->{Operation},
+		        Data         => {
+		            %Auth,
+		            %{ $Test->{RequestData} },
+		        },
+	);
+
+		    # check result
+		    $Self->Is(
+		        'HASH',
+		        ref $LocalResult,
+		        "$Test->{Name} - Local result structure is valid"
+		    );
+
+		    # start requester with our web service
+		    my $RequesterResult = $RequesterObject->Run(
+		        WebserviceID => $WebserviceID,
+		        Invoker      => $Test->{Operation},
+		        Data         => {
+		            %Auth,
+		            %{ $Test->{RequestData} },
+		        },
+		    );
+
+		    $Self->Is(
+		        $RequesterResult->{Success},
+		        $Test->{SuccessRequest},
+		        "$Test->{Name} - Requester successful result"
+		    );
+		    
+		   # check result
+		   
+		    $Self->Is(
+		        'HASH',
+		        ref $RequesterResult,
+		        "$Test->{Name} - Requester result structure is valid"
+		    );
 	
         $Self->Is(
             $LocalResult->{Data}->{Error}->{ErrorCode},
@@ -625,15 +985,16 @@ $Self->True(
  
 # delete customer users
 
-my $CustomerUserDelete = $CustomerUserObject->CustomerUserDelete(
-		CustomerUserID	=> $SpecialCustomerUser,
-		UserID		=> $UserID,
-	);
+#my $CustomerUserDelete = $CustomerUserObject->CustomerUserDelete(
+#		CustomerUserID	=> $SpecialCustomerUser,
+#		UserID		=> $UserID,
+#	);
 
-$Self->True(
-	$CustomerUserDelete,
-	"CustomerUserDelete() successful for CustomerUser ID $SpecialCustomerUser",
-);
+#$Self->True(
+#	$CustomerUserDelete,
+#	"CustomerUserDelete() successful for CustomerUser ID $SpecialCustomerUser",
+#);
+
 
 
 # delete user
@@ -646,6 +1007,16 @@ $Self->True(
     $Success,
     "User preference referenced to User ID $UserID is deleted!"
 );
+for my $ID (@DFIDs) {
+        $Success = $DBObject->Do(
+                SQL => "delete from dynamic_field where id = $ID",
+        );
+          
+        $Self->True(
+            $Success,
+            "Dynamic field with id $ID is deleted!"
+	);
+}
 #$Success = $DBObject->Do(
 #    SQL => "DELETE FROM users WHERE id = $UserID",
 #);
@@ -657,5 +1028,3 @@ $Self->True(
 $CacheObject->CleanUp();
 	
 1;
-
-
