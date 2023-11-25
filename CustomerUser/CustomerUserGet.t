@@ -35,7 +35,7 @@ my $RandomID = $Helper->GetRandomNumber();
 
 my $UserObject = $Kernel::OM->Get('Kernel::System::User');
 
-
+my @Users;
 #create user for tests
 my $UserID = $UserObject->UserAdd(
         UserFirstname   => 'Test',
@@ -50,6 +50,8 @@ $Self->True(
     $UserID,
     'User Add ()',
 );
+
+push @Users, $UserID;
 
 #delete old customer users
 
@@ -284,6 +286,11 @@ $Self->True(
 my $UserLogin = $Helper->TestUserCreate(
         Groups => ['admin','users'],
 );
+
+my $UserID2 = $UserObject->UserLookup(
+	UserLogin => $UserLogin
+);
+push @Users, $UserID2;
 
 my $Password = $UserLogin;
 my $RequesterSessionResult = $RequesterSessionObject->Run(
@@ -681,22 +688,29 @@ for my $CustomerUserID (@CustomerUserIDs){
 
 # delete user
 my $DBObject = $Kernel::OM->Get('Kernel::System::DB');
- 
-my $Success = $DBObject->Do(
-    SQL => "DELETE FROM user_preferences WHERE user_id = $UserID",
-);
-$Self->True(
-    $Success,
-    "User preference referenced to User ID $UserID is deleted!"
-);
-$Success = $DBObject->Do(
-    SQL => "DELETE FROM users WHERE id = $UserID",
-);
-$Self->True(
-    $Success,
-    "User with ID $UserID is deleted!"
-);
-
+for my $UserID (@Users) { 
+	my $Success = $DBObject->Do(
+	    SQL => "DELETE FROM user_preferences WHERE user_id = $UserID",
+	);
+	$Self->True(
+	    $Success,
+	    "User preference referenced to User ID $UserID is deleted!"
+	);
+	$Success = $DBObject->Do(
+		SQL => "delete from group_user where user_id = $UserID",
+	);
+	$Self->True(
+	    $Success,
+	    "Group user referenced to User ID $UserID is deleted!"
+	);
+	$Success = $DBObject->Do(
+	    SQL => "DELETE FROM users WHERE id = $UserID",
+	);
+	$Self->True(
+	    $Success,
+	    "User with ID $UserID is deleted!"
+	);
+}
 $CacheObject->CleanUp();
 	
 1;
