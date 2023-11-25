@@ -30,7 +30,7 @@ my $Helper      = $Kernel::OM->Get('Kernel::System::UnitTest::Helper');
 my $RandomID = $Helper->GetRandomNumber();
 
 my $UserObject = $Kernel::OM->Get('Kernel::System::User');
-
+my @Users;
 $Helper->ConfigSettingChange(
     Valid => 1,
     Key   => 'CheckEmailAddresses',
@@ -76,6 +76,7 @@ $Self->True(
 # add ID
 $DynamicFieldTextConfig{ID} = $FieldTextID;
 push @DFIDs, $FieldTextID;
+
 # add dropdown dynamic field
 my %DynamicFieldDropdownConfig = (
     Name       => "Unittest2$RandomID",
@@ -177,7 +178,7 @@ $Self->True(
     $UserID,
     'User Add ()',
 );
-
+push @Users, $UserID;
 #delete old customer users
 
 my @OldCustomerUserIDs = $CustomerUserObject->CustomerSearch(
@@ -305,6 +306,12 @@ $Self->Is(
 my $UserLogin = $Helper->TestUserCreate(
         Groups => ['admin','users'],
 );
+
+my $UserID2 = $UserObject->UserLookup(
+        UserLogin => $UserLogin,
+);
+
+push @Users, $UserID2;
 
 my $Password = $UserLogin;
 
@@ -983,32 +990,13 @@ $Self->True(
 	"Deleted web service $WebserviceID",
 );
  
-# delete customer users
-
-#my $CustomerUserDelete = $CustomerUserObject->CustomerUserDelete(
-#		CustomerUserID	=> $SpecialCustomerUser,
-#		UserID		=> $UserID,
-#	);
-
-#$Self->True(
-#	$CustomerUserDelete,
-#	"CustomerUserDelete() successful for CustomerUser ID $SpecialCustomerUser",
-#);
-
-
 
 # delete user
 my $DBObject = $Kernel::OM->Get('Kernel::System::DB');
  
-my $Success = $DBObject->Do(
-    SQL => "DELETE FROM user_preferences WHERE user_id = $UserID",
-);
-$Self->True(
-    $Success,
-    "User preference referenced to User ID $UserID is deleted!"
-);
+
 for my $ID (@DFIDs) {
-        $Success = $DBObject->Do(
+        my $Success = $DBObject->Do(
                 SQL => "delete from dynamic_field where id = $ID",
         );
           
@@ -1017,13 +1005,36 @@ for my $ID (@DFIDs) {
             "Dynamic field with id $ID is deleted!"
 	);
 }
-#$Success = $DBObject->Do(
-#    SQL => "DELETE FROM users WHERE id = $UserID",
-#);
-#$Self->True(
-#    $Success,
-#    "User with ID $UserID is deleted!"
-#);
+
+foreach (@Users) {
+	my $Success = $DBObject->Do(
+	    SQL => "DELETE FROM user_preferences WHERE user_id = $_",
+	);
+
+	$Self->True(
+	    $Success,
+	    "User preference referenced to User ID $_ is deleted!"
+	);
+
+	$Success = $DBObject->Do(
+	   SQL => "delete from group_user where user_id = $_",
+	);
+
+	$Self->True(
+	    $Success,
+	    "Group user referenced to User ID $_ is deleted!"
+	);
+
+	$Success = $DBObject->Do(
+	    SQL => "DELETE FROM users WHERE id = $_",
+	);
+	
+	$Self->True(
+	    $Success,
+	    "User with ID $_ is deleted!"
+	);
+}
+
 
 $CacheObject->CleanUp();
 	
