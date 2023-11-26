@@ -1,359 +1,960 @@
 # --
-# Kernel/GenericInterface/Operation/Customer/CustomerCompanyUpdate.pm - GenericInterface CustomerCompany operation backend
+# Copyright (C) 2001-2020 OTRS AG, https://otrs.com/
+# Copyright (C) 2021 Centuran Consulting, https://centuran.com/
 # --
 # This software comes with ABSOLUTELY NO WARRANTY. For details, see
 # the enclosed file COPYING for license information (GPL). If you
 # did not receive this file, see https://www.gnu.org/licenses/gpl-3.0.txt.
 # --
 
-package Kernel::GenericInterface::Operation::Customer::CustomerCompanyUpdate;
+package Kernel::System::CustomerCompany;
 
 use strict;
 use warnings;
 
-use Kernel::System::VariableCheck qw(IsArrayRefWithData IsHashRefWithData IsStringWithData);
+use Kernel::System::VariableCheck qw(:all);
 
-use parent qw(
-  Kernel::GenericInterface::Operation::Common
-  Kernel::GenericInterface::Operation::Customer::Common
+use parent qw(Kernel::System::EventHandler);
+
+our @ObjectDependencies = (
+    'Kernel::Config',
+    'Kernel::System::DynamicField',
+    'Kernel::System::DynamicField::Backend',
+    'Kernel::System::Encode',
+    'Kernel::System::Log',
+    'Kernel::System::Main',
+    'Kernel::System::ReferenceData',
+    'Kernel::System::Valid',
 );
-
-our $ObjectManagerDisabled = 1;
 
 =head1 NAME
 
-Kernel::GenericInterface::Operation::Customer::CustomerCompanyUpdate - GenericInterface CustomerCompanyUpdate Operation backend
+Kernel::System::CustomerCompany - customer company lib
+
+=head1 DESCRIPTION
+
+All Customer functions. E.g. to add and update customer companies.
 
 =head1 PUBLIC INTERFACE
 
 =head2 new()
 
-usually, you want to create an instance of this
-by using Kernel::GenericInterface::Operation->new();
+Don't use the constructor directly, use the ObjectManager instead:
+
+    my $CustomerCompanyObject = $Kernel::OM->Get('Kernel::System::CustomerCompany');
 
 =cut
 
-
 sub new {
-	my ( $Type, %Param ) = @_;
+    my ( $Type, %Param ) = @_;
 
-	my $Self = {};
-	bless( $Self, $Type );
+    # allocate new hash for object
+    my $Self = {};
+    bless( $Self, $Type );
 
-	# check needed objects
-	for my $Needed (qw( DebuggerObject WebserviceID )) {
-		if ( !$Param{$Needed} ) {
-			return {
-				Success      => 0,
-				ErrorMessage => "Got no $Needed!",
-			};
-		}
-		$Self->{$Needed} = $Param{$Needed};
-	}
+    # get needed objects
+    my $ConfigObject = $Kernel::OM->Get('Kernel::Config');
+    my $MainObject   = $Kernel::OM->Get('Kernel::System::Main');
 
-	return $Self;
-}
+    # load customer company backend modules
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
 
-=head2 Run()
+        next SOURCE if !$ConfigObject->Get("CustomerCompany$Count");
 
-perform CustomerCompanyUpdate Operation. This will return the updated CustomerID.
+        my $GenericModule = $ConfigObject->Get("CustomerCompany$Count")->{Module}
+            || 'Kernel::System::CustomerCompany::DB';
+        if ( !$MainObject->Require($GenericModule) ) {
+            $MainObject->Die("Can't load backend module $GenericModule! $@");
+        }
+        $Self->{"CustomerCompany$Count"} = $GenericModule->new(
+            Count              => $Count,
+            CustomerCompanyMap => $ConfigObject->Get("CustomerCompany$Count"),
+        );
+    }
 
-    my $Result = $OperationObject->Run(
-        Data => {
-            UserLogin         => 'some agent login',                            # UserLogin is required
-            Password  => 'some password',                                       # Password is required
-            CustomerID     => 'example.com',                                    # current CustomerID is required
-            CustomerCompany => {
-				CustomerID              => 'anotherexample.com',                # new CustomerID
-				CustomerCompanyName     => 'New Customer Inc.',
-				CustomerCompanyStreet   => '5201 Blue Lagoon Drive',
-				CustomerCompanyZIP      => '33126',
-				CustomerCompanyLocation => 'Miami',
-				CustomerCompanyCountry  => 'USA',
-				CustomerCompanyURL      => 'http://example.com',
-				CustomerCompanyComment  => 'some comment',
-            },
-            DynamicField => [                                                  # optional
-                {
-                    Name   => FieldNameX,
-                    Value  => 'some data',                                          # value type depends on the dynamic field
-                },
-                # ...
-            ],
-            # or
-            # DynamicField {
-            #    Name   => FieldNameX,
-            #    Value  => 'some data',
-            #},
-        },
+    # init of event handler
+    $Self->EventHandlerInit(
+        Config => 'CustomerCompany::EventModulePost',
     );
 
-    $Result = {
-        Success         => 1,                       # 0 or 1
-        ErrorMessage    => '',                      # in case of error
-        Data            => {                        # result data payload after Operation
-            CustomerID    => 'anotherexample.com',  # CustomerID in OTRS (help desk system)
-            Error => {                              # should not return errors
-                    ErrorCode    => 'CustomerCompanyUpdate.ErrorCode'
-                    ErrorMessage => 'Error Description'
-            },
+    return $Self;
+}
+
+=head2 CustomerCompanyAdd()
+
+add a new customer company
+
+    my $ID = $CustomerCompanyObject->CustomerCompanyAdd(
+        CustomerID              => 'example.com',
+        CustomerCompanyName     => 'New Customer Inc.',
+        CustomerCompanyStreet   => '5201 Blue Lagoon Drive',
+        CustomerCompanyZIP      => '33126',
+        CustomerCompanyCity     => 'Miami',
+        CustomerCompanyCountry  => 'USA',
+        CustomerCompanyURL      => 'http://www.example.org',
+        CustomerCompanyComment  => 'some comment',
+        ValidID                 => 1,
+        UserID                  => 123,
+    );
+
+NOTE: Actual fields accepted by this API call may differ based on
+CustomerCompany mapping in your system configuration.
+
+=cut
+
+sub CustomerCompanyAdd {
+    my ( $Self, %Param ) = @_;
+
+    # check data source
+    if ( !$Param{Source} ) {
+        $Param{Source} = 'CustomerCompany';
+    }
+
+    # check needed stuff
+    for (qw(CustomerID UserID)) {
+        if ( !$Param{$_} ) {
+            $Kernel::OM->Get('Kernel::System::Log')->Log(
+                Priority => 'error',
+                Message  => "Need $_!"
+            );
+            return;
+        }
+    }
+    
+    # store customer company data
+    my $Result = $Self->{ $Param{Source} }->CustomerCompanyAdd(%Param);
+    return if !$Result;
+    # trigger event
+    $Self->EventHandler(
+        Event => 'CustomerCompanyAdd',
+        Data  => {
+            CustomerID => $Param{CustomerID},
+            NewData    => \%Param,
         },
+        UserID => $Param{UserID},
+    );
+
+    return $Result;
+}
+
+=head2 CustomerCompanyAddGi()
+
+add a new customer company for gi module
+same signature
+
+=cut
+
+sub CustomerCompanyAddGi {
+    my ( $Self, %Param ) = @_;
+
+    # check data source
+    if ( !$Param{Source} ) {
+        $Param{Source} = 'CustomerCompany';
+    }
+
+    # check needed stuff
+    for (qw(CustomerID UserID)) {
+        if ( !$Param{$_} ) {
+            $Kernel::OM->Get('Kernel::System::Log')->Log(
+                Priority => 'error',
+                Message  => "Need $_!"
+            );
+            return;
+        }
+    }
+    
+    # store customer company data
+    $Self->{ $Param{Source} }->CustomerCompanyAdd(%Param);
+
+    # trigger event
+    $Self->EventHandler(
+        Event => 'CustomerCompanyAddGi',
+        Data  => {
+            CustomerID => $Param{CustomerID},
+            NewData    => \%Param,
+        },
+        UserID => $Param{UserID},
+    );
+
+    return $Param{CustomerID};
+}
+
+=head2 CustomerCompanyGet()
+
+get customer company attributes
+
+    my %CustomerCompany = $CustomerCompanyObject->CustomerCompanyGet(
+        CustomerID => 123,
+    );
+
+Returns:
+
+    %CustomerCompany = (
+        'CustomerCompanyName'    => 'Customer Inc.',
+        'CustomerID'             => 'example.com',
+        'CustomerCompanyStreet'  => '5201 Blue Lagoon Drive',
+        'CustomerCompanyZIP'     => '33126',
+        'CustomerCompanyCity'    => 'Miami',
+        'CustomerCompanyCountry' => 'United States',
+        'CustomerCompanyURL'     => 'http://example.com',
+        'CustomerCompanyComment' => 'Some Comments',
+        'ValidID'                => '1',
+        'CreateTime'             => '2010-10-04 16:35:49',
+        'ChangeTime'             => '2010-10-04 16:36:12',
+    );
+
+NOTE: Actual fields returned by this API call may differ based on
+CustomerCompany mapping in your system configuration.
+
+=cut
+
+sub CustomerCompanyGet {
+    my ( $Self, %Param ) = @_;
+
+    # check needed stuff
+    if ( !$Param{CustomerID} ) {
+        $Kernel::OM->Get('Kernel::System::Log')->Log(
+            Priority => 'error',
+            Message  => "Need CustomerID!"
+        );
+        return;
+    }
+
+    # Fetch dynamic field configurations for CustomerCompany.
+    my $DynamicFieldConfigs = $Kernel::OM->Get('Kernel::System::DynamicField')->DynamicFieldListGet(
+        ObjectType => 'CustomerCompany',
+        Valid      => 1,
+    );
+
+    my %DynamicFieldLookup = map { $_->{Name} => $_ } @{$DynamicFieldConfigs};
+
+    # get needed objects
+    my $ConfigObject              = $Kernel::OM->Get('Kernel::Config');
+    my $DynamicFieldBackendObject = $Kernel::OM->Get('Kernel::System::DynamicField::Backend');
+
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
+
+        my %Company = $Self->{"CustomerCompany$Count"}->CustomerCompanyGet( %Param, );
+        next SOURCE if !%Company;
+
+        # fetch dynamic field values
+        if ( IsArrayRefWithData( $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Map} ) ) {
+            CUSTOMERCOMPANYFIELD:
+            for my $CustomerCompanyField ( @{ $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Map} } ) {
+                next CUSTOMERCOMPANYFIELD if $CustomerCompanyField->[5] ne 'dynamic_field';
+                next CUSTOMERCOMPANYFIELD if !$DynamicFieldLookup{ $CustomerCompanyField->[2] };
+
+                my $Value = $DynamicFieldBackendObject->ValueGet(
+                    DynamicFieldConfig => $DynamicFieldLookup{ $CustomerCompanyField->[2] },
+                    ObjectName         => $Company{CustomerID},
+                );
+
+                $Company{ $CustomerCompanyField->[0] } = $Value;
+            }
+        }
+
+        # return company data
+        return (
+            %Company,
+            Source => "CustomerCompany$Count",
+            Config => $ConfigObject->Get("CustomerCompany$Count"),
+        );
+    }
+
+    return;
+}
+
+=head2 CustomerCompanyUpdate()
+
+update customer company attributes
+
+    $CustomerCompanyObject->CustomerCompanyUpdate(
+        CustomerCompanyID       => 'oldexample.com', # required for CustomerCompanyID-update
+        CustomerID              => 'example.com',
+        CustomerCompanyName     => 'New Customer Inc.',
+        CustomerCompanyStreet   => '5201 Blue Lagoon Drive',
+        CustomerCompanyZIP      => '33126',
+        CustomerCompanyLocation => 'Miami',
+        CustomerCompanyCountry  => 'USA',
+        CustomerCompanyURL      => 'http://example.com',
+        CustomerCompanyComment  => 'some comment',
+        ValidID                 => 1,
+        UserID                  => 123,
+    );
+
+=cut
+
+sub CustomerCompanyUpdate {
+    my ( $Self, %Param ) = @_;
+
+    $Param{CustomerCompanyID} ||= $Param{CustomerID};
+
+    # check needed stuff
+    if ( !$Param{CustomerCompanyID} ) {
+        $Kernel::OM->Get('Kernel::System::Log')->Log(
+            Priority => 'error',
+            Message  => "Need CustomerCompanyID or CustomerID!"
+        );
+        return;
+    }
+
+    # check if company exists
+    my %Company = $Self->CustomerCompanyGet( CustomerID => $Param{CustomerCompanyID} );
+    if ( !%Company ) {
+        $Kernel::OM->Get('Kernel::System::Log')->Log(
+            Priority => 'error',
+            Message  => "No such company '$Param{CustomerCompanyID}'!",
+        );
+        return;
+    }
+
+    my $Result = $Self->{ $Company{Source} }->CustomerCompanyUpdate(%Param);
+    return if !$Result;
+
+    # trigger event
+    $Self->EventHandler(
+        Event => 'CustomerCompanyUpdate',
+        Data  => {
+            CustomerID    => $Param{CustomerID},
+            OldCustomerID => $Param{CustomerCompanyID},
+            NewData       => \%Param,
+            OldData       => \%Company,
+        },
+        UserID => $Param{UserID},
+    );
+    return $Result;
+}
+
+=head2 CustomerCompanySourceList()
+
+return customer company source list
+
+    my %List = $CustomerCompanyObject->CustomerCompanySourceList(
+        ReadOnly => 0 # optional, 1 returns only RO backends, 0 returns writable, if not passed returns all backends
+    );
+
+=cut
+
+sub CustomerCompanySourceList {
+    my ( $Self, %Param ) = @_;
+
+    # get config object
+    my $ConfigObject = $Kernel::OM->Get('Kernel::Config');
+
+    my %Data;
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+
+        next SOURCE if !$ConfigObject->Get("CustomerCompany$Count");
+
+        if ( defined $Param{ReadOnly} ) {
+            my $BackendConfig = $ConfigObject->Get("CustomerCompany$Count");
+            if ( $Param{ReadOnly} ) {
+                next SOURCE if !$BackendConfig->{ReadOnly};
+            }
+            else {
+                next SOURCE if $BackendConfig->{ReadOnly};
+            }
+        }
+
+        $Data{"CustomerCompany$Count"} = $ConfigObject->Get("CustomerCompany$Count")->{Name}
+            || "No Name $Count";
+    }
+
+    return %Data;
+}
+
+=head2 CustomerCompanyList()
+
+get list of customer companies.
+
+    my %List = $CustomerCompanyObject->CustomerCompanyList();
+
+    my %List = $CustomerCompanyObject->CustomerCompanyList(
+        Valid => 0,
+        Limit => 0,     # optional, override configured search result limit (0 means unlimited)
+    );
+
+    my %List = $CustomerCompanyObject->CustomerCompanyList(
+        Search => 'somecompany',
+    );
+
+Returns:
+
+    %List = {
+        'example.com' => 'example.com Customer Inc.',
+        'acme.com'    => 'acme.com Acme, Inc.'
     };
 
 =cut
 
+sub CustomerCompanyList {
+    my ( $Self, %Param ) = @_;
 
-sub Run {
-	my ( $Self, %Param ) = @_;
-	
-	my $Result = $Self->Init(WebserviceID => $Self->{WebserviceID},);
+    # Get dynamic field object.
+    my $DynamicFieldObject = $Kernel::OM->Get('Kernel::System::DynamicField');
 
-	if ( !$Result->{Success} ) {
-		$Self->ReturnError(
-			ErrorCode    => 'Webservice.InvalidConfiguration',
-			ErrorMessage => $Result->{ErrorMessage},
-		);
-	}
-
-	# check needed stuff
-	my ( $UserID, $UserType ) = $Self->Auth(%Param,);
-
-	return $Self->ReturnError(
-		ErrorCode    => 'CustomerCompanyUpdate.AuthFail',
-		ErrorMessage => "CustomerCompanyUpdate: Authorization failing!",
-	) if !$UserID;
-
-	# check needed stuff
-	for my $Needed (qw(CustomerID)) {
-		if ( !$Param{Data}->{$Needed} ) {
-			return $Self->ReturnError(
-				ErrorCode    => 'CustomerCompanyUpdate.MissingParameter',
-				ErrorMessage => "CustomerCompanyUpdate: $Needed parameter is missing!",
-			);
-		}
-	}
-    my $CustomerID = $Param{Data}->{CustomerID};
-
-    if ( !IsHashRefWithData( $Param{Data}->{CustomerCompany} ) ) {
-		return $Self->ReturnError(
-			ErrorCode    => 'CustomerCompanyUpdate.EmptyRequest',
-			ErrorMessage => "CustomerCompanyUpdate: The request data is invalid!",
-		);
-	}
-	
-	my $Success = $Self->ValidateCustomerCompany(
-		CustomerID =>  $CustomerID,
-	);
-    if ( !$Success){
-		return $Self->ReturnError(
-			ErrorCode    => 'CustomerCompanyUpdate.NotValid',
-			ErrorMessage => "CustomerCompanyUpdate: CustomerID does not exist!",
-		);
-	}
-
-	my $CustomerCompany;
-	# isolate CustomerCompany parameter
-	$CustomerCompany = $Param{Data}->{CustomerCompany};
-
-	# remove leading and trailing spaces
-	for my $Attribute ( sort keys %{$CustomerCompany} ) {
-		if ( ref $Attribute ne 'HASH' && ref $Attribute ne 'ARRAY' ) {
-
-			#remove leading spaces
-			$CustomerCompany->{$Attribute} =~ s{\A\s+}{};
-
-			#remove trailing spaces
-			$CustomerCompany->{$Attribute} =~ s{\s+\z}{};
-		}
-	}
-
-	my $DynamicField;
-	my @DynamicFieldList;
-	my $DynamicFieldObjectID;
-	if ( defined $Param{Data}->{DynamicField} ) {
-
-		# isolate DynamicField parameter
-		$DynamicField = $Param{Data}->{DynamicField};
-
-		# homogenate input to array
-		if ( ref $DynamicField eq 'HASH' ) {
-			push @DynamicFieldList, $DynamicField;
-		}else {
-			@DynamicFieldList = @{$DynamicField};
-		}
-
-		# check DynamicField internal structure
-		for my $DynamicFieldItem (@DynamicFieldList) {
-			if ( !IsHashRefWithData($DynamicFieldItem) ) {
-				return {
-					ErrorCode => 'CustomerCompanyUpdate.InvalidParameter',
-					ErrorMessage =>"CustomerCompanyUpdate: CustomerCompany->DynamicField parameter is invalid!",
-				};
-			}
-
-			# remove leading and trailing spaces
-			for my $Attribute ( sort keys %{$DynamicFieldItem} ) {
-				if ( ref $Attribute ne 'HASH' && ref $Attribute ne 'ARRAY' ) {
-
-					#remove leading spaces
-					$DynamicFieldItem->{$Attribute} =~ s{\A\s+}{};
-
-					#remove trailing spaces
-					$DynamicFieldItem->{$Attribute} =~ s{\s+\z}{};
-				}
-			}
-
-			# check DynamicField attribute values
-			my $DynamicFieldCheck = $Self->_CheckDynamicField(
-				DynamicField => $DynamicFieldItem,
-				ObjectType	=> 'CustomerCompany',
-			);
-
-			if ( !$DynamicFieldCheck->{Success} ) {
-				return $Self->ReturnError( %{$DynamicFieldCheck} );
-			}
-		}
-		# get ObjectID by CustomerID
-		my $DynamicFieldObject = $Kernel::OM->Get('Kernel::System::DynamicField');
-		my $ObjectMapping = $DynamicFieldObject->ObjectMappingGet( 
-			ObjectName => $CustomerID,
-			ObjectType => 'CustomerCompany',
-		);
-
-		if (!IsHashRefWithData($ObjectMapping)) {
-			$DynamicFieldObjectID = $DynamicFieldObject->ObjectMappingCreate(
-				ObjectName => $CustomerID,
-				ObjectType => 'CustomerCompany',
-			);
-		}else{
-			$DynamicFieldObjectID = $ObjectMapping->{$CustomerID};
-		}
-
-		if ( !$DynamicFieldObjectID ){
-			return $Self->ReturnError(
-				ErrorCode => 'CustomerCompanyUpdate.DynamicFieldSetError',
-				ErrorMessage =>"CustomerCompanyUpdate: can't get ObjectID by name",
-			);
-		}
-	}
-
-	return $Self->_CustomerCompanyUpdate(
-		CustomerID       => $CustomerID,
-		CustomerCompany  => $CustomerCompany,
-		DynamicFieldList => \@DynamicFieldList,
-		ObjectID         => $DynamicFieldObjectID,
-		UserID           => $UserID,
-	);
-}
-
-=begin Internal:
-
-
-=head2 _CustomerCompanyUpdate()
-
-updates a CustomerCompany and sets dynamic fields if specified.
-
-    my $Response = $OperationObject->_CustomerCompanyUpdate(
-        CustomerID      => 'example.com'
-        CustomerCompany => $CustomerCompany,         # all CustomerCompany parameters
-        DynamicField    => $DynamicField,            # all dynamic field parameters
-        UserID          => 123,
+    my $DynamicFieldConfigs = $DynamicFieldObject->DynamicFieldListGet(
+        ObjectType => 'CustomerCompany',
+        Valid      => 1,
     );
 
-    returns:
+    my %DynamicFieldLookup = map { $_->{Name} => $_ } @{$DynamicFieldConfigs};
 
-    $Response = {
-        Success => 1,                               # if everything is OK
-        Data => {
-            CustomerID     => 'example.com',        # or value of NewCustomerID if specified in CustomerCompany data
+    # Get dynamic field backend object.
+    my $DynamicFieldBackendObject = $Kernel::OM->Get('Kernel::System::DynamicField::Backend');
+
+    my %Data;
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
+
+        # search dynamic field values, if configured
+        my $Map = $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Map};
+        if ( IsArrayRefWithData($Map) ) {
+
+            # fetch dynamic field names that are configured in Map
+            # only these will be considered for any other search config
+            # [ 'DynamicField_Name_Y', undef, 'Name_Y', 0, 0, 'dynamic_field', undef, 0,],
+            my %DynamicFieldNames = map { $_->[2] => 1 } grep { $_->[5] eq 'dynamic_field' } @{$Map};
+
+            if (%DynamicFieldNames) {
+                my $FoundDynamicFieldObjectIDs;
+                my $SearchFields;
+                my $SearchParam;
+
+                # check which of the dynamic fields configured in Map are also
+                # configured in SearchFields
+
+                # param Search
+                if ( defined $Param{Search} && length $Param{Search} ) {
+                    $SearchFields
+                        = $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{CustomerCompanySearchFields};
+                    $SearchParam = $Param{Search};
+                }
+
+                # search dynamic field values
+                if ( IsArrayRefWithData($SearchFields) ) {
+                    my @SearchDynamicFieldNames = grep { exists $DynamicFieldNames{$_} } @{$SearchFields};
+
+                    my %FoundDynamicFieldObjectIDs;
+                    FIELDNAME:
+                    for my $FieldName (@SearchDynamicFieldNames) {
+
+                        my $DynamicFieldConfig = $DynamicFieldLookup{$FieldName};
+
+                        next FIELDNAME if !IsHashRefWithData($DynamicFieldConfig);
+
+                        my $DynamicFieldValues = $DynamicFieldBackendObject->ValueSearch(
+                            DynamicFieldConfig => $DynamicFieldConfig,
+                            Search             => $SearchParam,
+                        );
+
+                        if ( IsArrayRefWithData($DynamicFieldValues) ) {
+                            for my $DynamicFieldValue ( @{$DynamicFieldValues} ) {
+                                $FoundDynamicFieldObjectIDs{ $DynamicFieldValue->{ObjectID} } = 1;
+                            }
+                        }
+                    }
+
+                    $FoundDynamicFieldObjectIDs = [ keys %FoundDynamicFieldObjectIDs ];
+                }
+
+                # execute backend search for found object IDs
+                # this data is being merged with the following CustomerCompanyList call
+                if ( IsArrayRefWithData($FoundDynamicFieldObjectIDs) ) {
+
+                    my $ObjectNames = $DynamicFieldObject->ObjectMappingGet(
+                        ObjectID   => $FoundDynamicFieldObjectIDs,
+                        ObjectType => 'CustomerCompany',
+                    );
+
+                    my %SearchParam = %Param;
+                    delete $SearchParam{Search};
+                    my %CompanyList = $Self->{"CustomerCompany$Count"}->CustomerCompanyList(%SearchParam);
+
+                    OBJECTNAME:
+                    for my $ObjectName ( values %{$ObjectNames} ) {
+                        next OBJECTNAME if exists $Data{$ObjectName};
+
+                        if ( IsHashRefWithData( \%CompanyList ) && exists $CompanyList{$ObjectName} ) {
+                            %Data = (
+                                $ObjectName => $CompanyList{$ObjectName},
+                                %Data
+                            );
+                        }
+                    }
+                }
+            }
         }
-    }
 
-    $Response = {
-        Success      => 0,                         # if unexpected error
-        ErrorMessage => "$Param{ErrorCode}: $Param{ErrorMessage}",
+        # get company list result of backend and merge it
+        my %SubData = $Self->{"CustomerCompany$Count"}->CustomerCompanyList(%Param);
+        %Data = ( %Data, %SubData );
     }
+    return %Data;
+}
+
+=head2 CustomerCompanySearchDetail()
+
+To find customer companies in the system.
+
+The search criteria are logically AND connected.
+When a list is passed as criteria, the individual members are OR connected.
+When an undef or a reference to an empty array is passed, then the search criteria
+is ignored.
+
+Returns either a list, as an arrayref, or a count of found customer company ids.
+The count of results is returned when the parameter C<Result = 'COUNT'> is passed.
+
+    my $CustomerCompanyIDsRef = $CustomerCompanyObject->CustomerCompanySearchDetail(
+
+        # all search fields possible which are defined in CustomerCompany::EnhancedSearchFields
+        CustomerID          => 'example*',                                  # (optional)
+        CustomerCompanyName => 'Name*',                                     # (optional)
+
+        # array parameters are used with logical OR operator (all values are possible which
+        are defined in the config selection hash for the field)
+        CustomerCompanyCountry => [ 'Austria', 'Germany', ],                # (optional)
+
+        # DynamicFields
+        #   At least one operator must be specified. Operators will be connected with AND,
+        #       values in an operator with OR.
+        #   You can also pass more than one argument to an operator: ['value1', 'value2']
+        DynamicField_FieldNameX => {
+            Equals            => 123,
+            Like              => 'value*',                # "equals" operator with wildcard support
+            GreaterThan       => '2001-01-01 01:01:01',
+            GreaterThanEquals => '2001-01-01 01:01:01',
+            SmallerThan       => '2002-02-02 02:02:02',
+            SmallerThanEquals => '2002-02-02 02:02:02',
+        }
+
+        OrderBy => [ 'CustomerID', 'CustomerCompanyCountry' ],              # (optional)
+        # ignored if the result type is 'COUNT'
+        # default: [ 'CustomerID' ]
+        # (all search fields possible which are defined in
+        CustomerCompany::EnhancedSearchFields)
+
+        # Additional information for OrderBy:
+        # The OrderByDirection can be specified for each OrderBy attribute.
+        # The pairing is made by the array indices.
+
+        OrderByDirection => [ 'Down', 'Up' ],                               # (optional)
+        # ignored if the result type is 'COUNT'
+        # (Down | Up) Default: [ 'Down' ]
+
+        Result => 'ARRAY' || 'COUNT',                                       # (optional)
+        # default: ARRAY, returns an array of change ids
+        # COUNT returns a scalar with the number of found changes
+
+        Limit => 100,                                                       # (optional)
+        # ignored if the result type is 'COUNT'
+    );
+
+Returns:
+
+Result: 'ARRAY'
+
+    @CustomerIDs = ( 1, 2, 3 );
+
+Result: 'COUNT'
+
+    $CustomerIDs = 10;
 
 =cut
 
-sub _CustomerCompanyUpdate {
-	my ( $Self, %Param ) = @_;
+sub CustomerCompanySearchDetail {
+    my ( $Self, %Param ) = @_;
 
-	my $CustomerID = $Param{CustomerID};
-	my $CustomerCompany  = $Param{CustomerCompany};
-	my $DynamicFieldList = $Param{DynamicFieldList};
-	my $ObjectID = $Param{ObjectID};
-	my $UserID = $Param{UserID};
+    # Get all general search fields (without a restriction to a source).
+    my @AllSearchFields = $Self->CustomerCompanySearchFields();
 
-	# get CustomeCompany object
-	my $CustomerCompanyObject = $Kernel::OM->Get('Kernel::System::CustomerCompany');
+    # Generate a hash with the customer company sources which must be searched.
+    my %SearchCustomerCompanySources;
 
-	# get current CustomerCompany data
-	my %CustomerCompanyEntry = $CustomerCompanyObject->CustomerCompanyGet(
-		CustomerID     => $CustomerID,
-		UserID         => $UserID,
-	);
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
 
-	# prepare new CustomerUser data
-	my %newCustomerCompanyData;
-	$newCustomerCompanyData{UserID} = $UserID;
-	for my $Item ( keys %CustomerCompanyEntry ) {
-		if ( defined $CustomerCompany->{$Item} ) {
-			$newCustomerCompanyData{$Item} = $CustomerCompany->{$Item};
-		}else {
+        # Get the search fields for the current source.
+        my @SourceSearchFields = $Self->CustomerCompanySearchFields(
+            Source => "CustomerCompany$Count",
+        );
+        my %LookupSourceSearchFields = map { $_->{Name} => 1 } @SourceSearchFields;
+
+        # Check if all search param exists in the search fields from the current source.
+        SEARCHFIELD:
+        for my $SearchField (@AllSearchFields) {
+
+            next SEARCHFIELD if !$Param{ $SearchField->{Name} };
+
+            next SOURCE if !$LookupSourceSearchFields{ $SearchField->{Name} };
+        }
+        $SearchCustomerCompanySources{"CustomerCompany$Count"} = \@SourceSearchFields;
+    }
+
+    # Set the default behaviour for the return type.
+    $Param{Result} ||= 'ARRAY';
+
+    if ( $Param{Result} eq 'COUNT' ) {
+
+        my $IDsCount = 0;
+
+        SOURCE:
+        for my $Source ( sort keys %SearchCustomerCompanySources ) {
+            next SOURCE if !$Self->{$Source};
+
+            my $SubIDsCount = $Self->{$Source}->CustomerCompanySearchDetail(
+                %Param,
+                SearchFields => $SearchCustomerCompanySources{$Source},
+            );
+
+            return if !defined $SubIDsCount;
+
+            $IDsCount += $SubIDsCount || 0;
+        }
+        return $IDsCount;
+    }
+    else {
+
+        my @IDs;
+
+        my $ResultCount = 0;
+
+        SOURCE:
+        for my $Source ( sort keys %SearchCustomerCompanySources ) {
+            next SOURCE if !$Self->{$Source};
+
+            my $SubIDs = $Self->{$Source}->CustomerCompanySearchDetail(
+                %Param,
+                SearchFields => $SearchCustomerCompanySources{$Source},
+            );
+
+            return if !defined $SubIDs;
+
+            next SOURCE if !IsArrayRefWithData($SubIDs);
+
+            push @IDs, @{$SubIDs};
+
+            $ResultCount++;
+        }
+
+        # If we have more then one search results from diffrent sources, we need a resorting
+        #   and splice (for the limit) because of the merged single results.
+        if ( $ResultCount > 1 ) {
+
+            my @CustomerCompanyataList;
+
+            for my $ID (@IDs) {
+
+                my %CustomerCompanyData = $Self->CustomerCompanyGet(
+                    CustomerID => $ID,
+                );
+                push @CustomerCompanyataList, \%CustomerCompanyData;
+            }
+
+            my $OrderBy = 'CustomerID';
+            if ( IsArrayRefWithData( $Param{OrderBy} ) ) {
+                $OrderBy = $Param{OrderBy}->[0];
+            }
+
+            if ( IsArrayRefWithData( $Param{OrderByDirection} ) && $Param{OrderByDirection}->[0] eq 'Up' ) {
+                @CustomerCompanyataList
+                    = sort { lc( $a->{$OrderBy} ) cmp lc( $b->{$OrderBy} ) } @CustomerCompanyataList;
+            }
+            else {
+                @CustomerCompanyataList
+                    = sort { lc( $b->{$OrderBy} ) cmp lc( $a->{$OrderBy} ) } @CustomerCompanyataList;
+            }
+
+            if ( $Param{Limit} && scalar @CustomerCompanyataList > $Param{Limit} ) {
+                splice @CustomerCompanyataList, $Param{Limit};
+            }
+
+            @IDs = map { $_->{CustomerID} } @CustomerCompanyataList;
+        }
+
+        return \@IDs;
+    }
+}
+
+=head2 CustomerCompanySearchFields()
+
+Get a list of defined search fields (optional only the relevant fields for the given source).
+
+    my @SeachFields = $CustomerCompanyObject->CustomerCompanySearchFields(
+        Source => 'CustomerCompany', # optional, but important in the CustomerCompanySearchDetail to get the right database fields
+    );
+
+Returns an array of hash references.
+
+    @SeachFields = (
+        {
+            Name  => 'CustomerID',
+            Label => 'CustomerID',
+            Type  => 'Input',
+        },
+        {
+            Name           => 'CustomerCompanyCountry',
+            Label          => 'Country',
+            Type           => 'Selection',
+            SelectionsData => {
+                'Germany'        => 'Germany',
+                'United Kingdom' => 'United Kingdom',
+                'United States'  => 'United States',
+                ...
+            },
+        },
+        {
+            Name          => 'DynamicField_Branch',
+            Label         => '',
+            Type          => 'DynamicField',
+            DatabaseField => 'Branch',
+        },
+    );
+
+=cut
+
+sub CustomerCompanySearchFields {
+    my ( $Self, %Param ) = @_;
+
+    # Get the search fields from all customer company maps (merge from all maps together).
+    my @SearchFields;
+
+    my %SearchFieldsExists;
+
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
+        next SOURCE if $Param{Source} && $Param{Source} ne "CustomerCompany$Count";
+
+        ENTRY:
+        for my $Entry ( @{ $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Map} } ) {
+
+            my $SearchFieldName = $Entry->[0];
+
+            next ENTRY if $SearchFieldsExists{$SearchFieldName};
+
+            # Remeber the already collected search field name.
+            $SearchFieldsExists{$SearchFieldName} = 1;
+
+            my %FieldConfig = $Self->GetFieldConfig(
+                FieldName => $SearchFieldName,
+                Source    => $Param{Source},     # to get the right database field for the given source
+            );
+
+            next SEARCHFIELDNAME if !%FieldConfig;
+
+            my %SearchFieldData = (
+                %FieldConfig,
+                Name => $SearchFieldName,
+            );
+
+            my %SelectionsData = $Self->GetFieldSelections(
+                FieldName => $SearchFieldName,
+            );
+
+            if ( $SearchFieldData{StorageType} eq 'dynamic_field' ) {
+                $SearchFieldData{Type} = 'DynamicField';
+            }
+            elsif (%SelectionsData) {
+                $SearchFieldData{Type}           = 'Selection';
+                $SearchFieldData{SelectionsData} = \%SelectionsData;
+            }
+            else {
+                $SearchFieldData{Type} = 'Input';
+            }
+
+            push @SearchFields, \%SearchFieldData;
+        }
+    }
+
+    return @SearchFields;
+}
+
+=head2 GetFieldConfig()
+
+This function collect some field config information from the customer user map.
+
+    my %FieldConfig = $CustomerCompanyObject->GetFieldConfig(
+        FieldName => 'CustomerCompanyName',
+        Source    => 'CustomerCompany', # optional
+    );
+
+Returns some field config information:
+
+    my %FieldConfig = (
+        Label         => 'Name',
+        DatabaseField => 'name',
+        StorageType   => 'var',
+    );
+
+=cut
+
+sub GetFieldConfig {
+    my ( $Self, %Param ) = @_;
+
+    if ( !$Param{FieldName} ) {
+        $Kernel::OM->Get('Kernel::System::Log')->Log(
+            Priority => 'error',
+            Message  => "Need FieldName!"
+        );
+        return;
+    }
+
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
+        next SOURCE if $Param{Source} && $Param{Source} ne "CustomerCompany$Count";
+
+        # Search the right field and return the label.
+        ENTRY:
+        for my $Entry ( @{ $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Map} } ) {
+            next ENTRY if $Param{FieldName} ne $Entry->[0];
+
+            my %FieldConfig = (
+                Label         => $Entry->[1],
+                DatabaseField => $Entry->[2],
+                StorageType   => $Entry->[5],
+            );
+
+            return %FieldConfig;
+        }
+    }
+
+    return;
+}
+
+=head2 GetFieldSelections()
+
+This function collect the selections for the given field name, if the field has some selections.
+
+    my %SelectionsData = $CustomerCompanyObject->GetFieldSelections(
+        FieldName => 'CustomerCompanyCountry',
+    );
+
+Returns the selections for the given field name (merged from all sources) or a empty hash:
+
+    my %SelectionData = (
+        'Germany'        => 'Germany',
+        'United Kingdom' => 'United Kingdom',
+        'United States'  => 'United States',
+    );
+
+=cut
+
+sub GetFieldSelections {
+    my ( $Self, %Param ) = @_;
+
+    # check needed stuff
+    if ( !$Param{FieldName} ) {
+        $Kernel::OM->Get('Kernel::System::Log')->Log(
+            Priority => 'error',
+            Message  => "Need FieldName!"
+        );
+        return;
+    }
+
+    my %SelectionsData;
+
+    SOURCE:
+    for my $Count ( '', 1 .. 10 ) {
+        next SOURCE if !$Self->{"CustomerCompany$Count"};
+        next SOURCE if !$Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Selections}->{ $Param{FieldName} };
+
+        %SelectionsData = (
+            %SelectionsData,
+            %{ $Self->{"CustomerCompany$Count"}->{CustomerCompanyMap}->{Selections}->{ $Param{FieldName} } }
+        );
+    }
+
+    # Make sure the encoding stamp is set.
+    for my $Key ( sort keys %SelectionsData ) {
+        $SelectionsData{$Key} = $Kernel::OM->Get('Kernel::System::Encode')->EncodeInput( $SelectionsData{$Key} );
+    }
+
+    # Default handling for field 'CustomerCompanyCountry'.
+    if ( !%SelectionsData && $Param{FieldName} =~ /^CustomerCompanyCountry/i ) {
+        %SelectionsData = %{ $Kernel::OM->Get('Kernel::System::ReferenceData')->CountryList() };
+    }
+
+    # Default handling for field 'ValidID'.
+    elsif ( !%SelectionsData && $Param{FieldName} =~ /^ValidID/i ) {
+        %SelectionsData = $Kernel::OM->Get('Kernel::System::Valid')->ValidList();
+    }
+
+    return %SelectionsData;
+}
+
+=head2 CustomerCompanyDelete()
+
+deletes a customer company from storage
+
+        my $Success = $CustomerCompanyObject->CustomerCompanyDelete(
+                CustomerCompanyID  => 123,
+                UserID          => 123,
+);
+
+Events:
+        CustomerCompanyDelete
+
+=cut
+
+sub CustomerCompanyDelete {
+
+my ( $Self, %Param ) = @_;
+
+        # check needed stuff
+        for my $Needed (qw(CustomerID UserID)) {
+                if ( !$Param{$Needed}) {
+                        $Kernel::OM->Get('Kernel::System::Log')->Log(
+                                Priority        => 'error',
+                                Message         => "Need $Needed!",
+                );
+                return;
+                }
+        }
+
+        # get database object
+        my $DBObject = $Kernel::OM->Get('Kernel::System::DB');
 	
-			$newCustomerCompanyData{$Item} = $CustomerCompanyEntry{$Item};
-		}
-	}
+	# delete customer company
+        return if !$DBObject->Do(
+                SQL     => 'DELETE FROM customer_company WHERE customer_id = ?',
+                Bind    => [ \$Param{CustomerID} ],
+        );
+
+	# trigger event
+        $Self->EventHandler(
+                Event   => 'CustomerCompanyDelete',
+                Data    => {
+                        CustomerID  => $Param{CustomerID},
+                },
+                UserID  => $Param{UserID},
+        );
 	
-	$newCustomerCompanyData{ValidID} = 1;
 
-	# update CustomerCompany parameters
-	my $Success = $CustomerCompanyObject->CustomerCompanyUpdate(
-		CustomerCompanyID	=> $CustomerCompanyEntry{CustomerID},
-		%newCustomerCompanyData,
-		UserID	=> 1,
-	);
-	if ( !$Success ) {
-		return {
-			Success => 0,
-			ErrorMessage =>'CustomerCompany could not be updated, please contact system administrator!',
-		};
-	}else {
-		$CustomerID = $newCustomerCompanyData{CustomerID};
-	}
-
-	# set dynamic fields
-	for my $DynamicField ( @{$DynamicFieldList} ) {
-		my $Result = $Self->SetDynamicFieldValue(
-			%{$DynamicField},
-			ObjectID  => $ObjectID,
-			UserID    => $UserID,
-		);
-
-		if ( !$Result->{Success} ) {
-			my $ErrorMessage =$Result->{ErrorMessage} || "Dynamic Field $DynamicField->{Name} could not be set,". " please contact the system administrator";
-
-			return {
-				Success      => 0,
-				ErrorMessage => $ErrorMessage,
-			};
-		}
-	}
-
-	return {
-		Success => 1,
-		Data    => {
-			CustomerID     => $CustomerID,
-		},
-	};
+        return 1;
 
 
 }
 
-1;
+sub DESTROY {
+    my $Self = shift;
 
-=end Internal:
+    # execute all transaction events
+    $Self->EventHandlerTransaction();
+
+    return 1;
+}
+
+1;
 
 =head1 TERMS AND CONDITIONS
 

@@ -152,27 +152,6 @@ sub Run {
 		);
 	}
 	  
-#    my $CustomerCompanyObject = $Kernel::OM->Get('Kernel::System::CustomerCompany'); 
- #   my $str = 1;
-  #  my %Customer  = $CustomerCompanyObject->CustomerCompanyGet( CustomerID => $CustomerCompany->{CustomerID});
-
-   # return $Self->ReturnError(
-#	ErrorCode => 'CustomerCompanyCreate.BadID',
-#	ErrorMessage =>"CustomerCompanyCreate: This CustomerID already in use!",
- #   ) if (%Customer);
-
-#    my $ID = $CustomerCompanyObject->CustomerCompanyAddGi(
-#		CustomerID              => $CustomerCompany->{CustomerID},
-#		CustomerCompanyName     => $CustomerCompany->{CustomerCompanyName},
-#		CustomerCompanyStreet   => $CustomerCompany->{CustomerCompanyStreet} || '',
-#		CustomerCompanyZIP      => $CustomerCompany->{CustomerCompanyZIP} || '',
-#		CustomerCompanyCity     => $CustomerCompany->{CustomerCompanyCity} || '',
-#		CustomerCompanyCountry  => $CustomerCompany->{CustomerCompanyCountry} || '',
-#		CustomerCompanyURL      => $CustomerCompany->{CustomerCompanyURL} || '',
-#		CustomerCompanyComment  => $CustomerCompany->{CustomerCompanyComment} || '',
-#		ValidID                 => 1,
-#		UserID                  => $UserID,
-#	);
 
 	#return $Self->ReturnError(ErrorCode =>$ID,);
 	#if ( !$ID ) {
